@@ -1,5 +1,5 @@
 {
-  description = "Standalone flake to install dcal (Dank Calendar)";
+  description = "Standalone flake to install and configure dcal (Dank Calendar)";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -12,11 +12,12 @@
       nixpkgs,
       utils,
     }:
-    utils.lib.eachDefaultSystem (
+    # Keep the package definition multi-system
+    (utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = import nixpkgs { inherit system; };
-        Downs = pkgs.buildGoModule rec {
+        dcal-pkg = pkgs.buildGoModule rec {
           pname = "dankcalendar";
           version = "0.2.2";
 
@@ -33,16 +34,14 @@
           postPatch = ''
             rm -rf vendor
           '';
-          dontWrapQtApps = true;
+
           proxyVendor = false;
           vendorHash = "sha256-2eBwE1jnvGDQiMD1wKDTIr2CnKWWdhNpIHhkl2R2jIQ=";
 
-          # Keep nativeBuildInputs completely free of the Qt hook so the module fetch works
           nativeBuildInputs = [
             pkgs.go
             pkgs.makeWrapper
           ];
-
           buildInputs = [
             pkgs.libsecret
             pkgs.glib
@@ -50,6 +49,8 @@
             pkgs.quickshell
             pkgs.qt6.qtdeclarative
           ];
+
+          dontWrapQtApps = true;
 
           postInstall = ''
             mkdir -p $out/share/quickshell/dankcal
@@ -60,9 +61,9 @@
 
             mkdir -p $out/share/applications
             cp ../assets/com.danklinux.dankcalendar.desktop $out/share/applications/
+
           '';
 
-          # Manually invoke the Qt wrapper tool *only* on the final binary output
           postFixup = ''
             wrapProgram $out/bin/dcal \
               --prefix QT_PLUGIN_PATH : "${pkgs.qt6.qtbase}/${pkgs.qt6.qtbase.qtPluginPrefix}" \
@@ -72,8 +73,45 @@
         };
       in
       {
-        packages.default = Downs;
-        packages.dcal = Downs;
+        packages.default = dcal-pkg;
+        packages.dcal = dcal-pkg;
       }
-    );
+    ))
+    // {
+      nixosModules.default =
+        {
+          config,
+          lib,
+          pkgs,
+          ...
+        }:
+        let
+          cfg = config.services.dcal;
+          dcalPkg = self.packages.${pkgs.system}.default;
+        in
+        {
+          options.services.dcal = {
+            enable = lib.mkEnableOption "Dank Calendar daemon and shell UI";
+          };
+
+          config = lib.mkIf cfg.enable {
+            environment.systemPackages = [ dcalPkg ];
+
+            # Define the pristine user service entirely within Nix
+            systemd.user.services.dcal = {
+              description = "Dank Calendar Daemon";
+              after = [ "graphical-session.target" ];
+              wantedBy = [ "graphical-session.target" ];
+
+              serviceConfig = {
+                # Points directly to the wrapped store binary
+                # Type = "forking";
+                ExecStart = "${dcalPkg}/bin/dcal daemon";
+                Restart = "on-failure";
+                RestartSec = 3;
+              };
+            };
+          };
+        };
+    };
 }
